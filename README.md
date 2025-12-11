@@ -21,7 +21,7 @@ cmake --build build -j
 ```
 - AMD/OpenCL
 ```
-./ethminer-gpu -G --olivetum -P http://<RPC_HOST>:<PORT> --report-hashrate --display-interval 10
+./ethminer -G --olivetum -P http://<RPC_HOST>:<PORT> --report-hashrate --display-interval 10
 ```
 
 ## Benchmark
