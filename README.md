@@ -10,7 +10,23 @@ Fork of ethminer focused on Olivetumhash. CUDA and OpenCL binaries work on one b
 
 ## Build
 ```
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+```
+
+Recommended for Linux + CUDA 12.x (avoid GCC 13 toolchain issues):
+```
+cmake -S . -B build_gcc12 -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=/usr/bin/gcc-12 \
+  -DCMAKE_CXX_COMPILER=/usr/bin/g++-12 \
+  -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-12
+cmake --build build_gcc12 -j
+```
+If you see _Float32/_Float64 errors with CUDA 12.0 + GCC 13, use GCC 12 or upgrade CUDA.
+
+To add extra CUDA architectures:
+```
+cmake -S . -B build -DCOMPUTE=86,89
 cmake --build build -j
 ```
 
@@ -32,4 +48,7 @@ Run Olivetumhash benchmark without a pool (example: epoch 0):
 
 ## Notes
 - Requires appropriate GPU drivers with CUDA/OpenCL runtime.
+- CUDA builds include sm_89 (RTX 40xx) and sm_90 when supported by the toolkit.
+- Default CUDA grid size is 4096 (`--cu-grid-size`).
+- `--cl-global-work` sets the OpenCL global work size multiplier.
 - Based on the open-source ethminer project; original authorship retained in source history.

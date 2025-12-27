@@ -53,6 +53,24 @@ __device__ __forceinline__ void be64put(uint8_t* p, uint64_t v)
     p[7] = (uint8_t)(v);
 }
 
+__device__ __forceinline__ uint64_t ldg_u64(const uint64_t* p)
+{
+#if __CUDA_ARCH__ >= 350
+    return __ldg(p);
+#else
+    return *p;
+#endif
+}
+
+__device__ __forceinline__ ulonglong2 ldg_u64x2(const ulonglong2* p)
+{
+#if __CUDA_ARCH__ >= 350
+    return __ldg(p);
+#else
+    return *p;
+#endif
+}
+
 __device__ __forceinline__ int cmp256(const uint8_t* a, const uint8_t* b)
 {
     for (int i = 0; i < 32; ++i)
@@ -303,8 +321,9 @@ __device__ __forceinline__ void keccak_hash(
         inlen -= rateBytes;
     }
 
-    uint8_t block[200];
-    for (size_t i = 0; i < 200; ++i)
+    // rateBytes is 72 (keccak512) or 136 (keccak256).
+    uint8_t block[136];
+    for (size_t i = 0; i < rateBytes; ++i)
         block[i] = 0;
     for (size_t i = 0; i < inlen; ++i)
         block[i] = in[i];
@@ -339,11 +358,16 @@ __device__ __forceinline__ void keccak256(uint8_t* out, const uint8_t* in, size_
 }
 
 // launch_bounds helps NVCC keep register pressure in check for block sizes up to 256.
-__global__ __launch_bounds__(256, 2) void olivetumhash_search_kernel(
+__device__ __forceinline__ void olivetumhash_search_kernel_body(
     volatile Search_results* g_output, uint64_t start_nonce)
 {
     const uint32_t gid = blockIdx.x * blockDim.x + threadIdx.x;
     uint64_t nonce = start_nonce + gid;
+
+    const uint64_t header0 = le64(d_oliv_header);
+    const uint64_t header1 = le64(d_oliv_header + 8);
+    const uint64_t header2 = le64(d_oliv_header + 16);
+    const uint64_t header3 = le64(d_oliv_header + 24);
 
     uint8_t nonceBytes[8];
     be64put(nonceBytes, nonce);
@@ -355,101 +379,126 @@ __global__ __launch_bounds__(256, 2) void olivetumhash_search_kernel(
     for (int i = 0; i < 8; ++i)
         seed[32 + i] = nonceBytes[i];
 
-    uint8_t h512[64];
+    alignas(8) uint8_t h512[64];
     keccak512(h512, seed, sizeof(seed));
 
-    uint8_t mixBytes[64];
-    for (int i = 0; i < 64; ++i)
-        mixBytes[i] = h512[i];
-
     uint64_t mixWords[8];
+    const uint64_t* mixInitWords = reinterpret_cast<const uint64_t*>(h512);
+#pragma unroll
     for (int i = 0; i < 8; ++i)
-        mixWords[i] = le64(mixBytes + i * 8);
+        mixWords[i] = mixInitWords[i];
 
     uint64_t chunkCount = d_oliv_chunk_count;
     if (chunkCount == 0)
         chunkCount = 1;
 
-    uint8_t progBuf1[40];
-    for (int i = 0; i < 32; ++i)
-        progBuf1[i] = d_oliv_header[i];
-    for (int i = 0; i < 8; ++i)
-        progBuf1[32 + i] = nonceBytes[i];
-    uint8_t progBytes1[64];
-    keccak512(progBytes1, progBuf1, sizeof(progBuf1));
-
-    uint8_t progBuf2[104];
+    alignas(8) uint8_t progBuf2[104];
     for (int i = 0; i < 64; ++i)
-        progBuf2[i] = progBytes1[i];
+        progBuf2[i] = h512[i];
     for (int i = 0; i < 32; ++i)
         progBuf2[64 + i] = d_oliv_header[i];
     for (int i = 0; i < 8; ++i)
         progBuf2[96 + i] = nonceBytes[i];
-    uint8_t progBytes2[64];
+    alignas(8) uint8_t progBytes2[64];
     keccak512(progBytes2, progBuf2, sizeof(progBuf2));
 
     uint64_t program[16];
+    const uint64_t* progWords1 = reinterpret_cast<const uint64_t*>(h512);
+    const uint64_t* progWords2 = reinterpret_cast<const uint64_t*>(progBytes2);
+#pragma unroll
     for (int i = 0; i < 8; ++i)
-        program[i] = le64(progBytes1 + i * 8);
-    for (int i = 0; i < 8; ++i)
-        program[8 + i] = le64(progBytes2 + i * 8);
+    {
+        program[i] = progWords1[i];
+        program[8 + i] = progWords2[i];
+    }
     const int programLen = 16;
 
-    uint64_t dynamicSalt = le64(d_oliv_header + 8) ^ nonceLE;
+    uint64_t dynamicSalt = header1 ^ nonceLE;
     const uint64_t refreshInterval = 8;
+    const uint64_t* dataset64 = reinterpret_cast<const uint64_t*>(d_oliv_dataset);
 
     for (uint64_t i = 0; i < 64; ++i)
     {
         if (refreshInterval != 0 && i != 0 && i % refreshInterval == 0)
         {
-            uint8_t buf[104];
+            alignas(8) uint8_t buf[104];
             for (int j = 0; j < 64; ++j)
-                buf[j] = mixBytes[j];
+                buf[j] = h512[j];
             for (int j = 0; j < 32; ++j)
                 buf[64 + j] = d_oliv_header[j];
             for (int j = 0; j < 8; ++j)
                 buf[96 + j] = nonceBytes[j];
-            uint8_t sum[64];
-            keccak512(sum, buf, sizeof(buf));
+            uint64_t sumWords[8];
+            keccak512(reinterpret_cast<uint8_t*>(sumWords), buf, sizeof(buf));
+#pragma unroll
             for (int j = 0; j < programLen; ++j)
-            {
-                size_t off = (j * 8) % 64;
-                uint64_t word = le64(sum + off);
-                program[j] ^= word;
-            }
-            dynamicSalt ^= le64(sum);
+                program[j] ^= sumWords[j & 7];
+            dynamicSalt ^= sumWords[0];
         }
 
         uint64_t progWord = program[i % programLen] ^ (i * 0x9e3779b97f4a7c15ULL);
         int sourceLane = (int)((progWord >> 5) & 7);
         int rotateAmt = (int)(progWord & 63) + 1;
 
-        uint64_t index = mixWords[sourceLane] ^ progWord ^ le64(d_oliv_header);
+        uint64_t index = mixWords[sourceLane] ^ progWord ^ header0;
         index ^= (i + (uint64_t)sourceLane) * 0x517cc1b727220a95ULL;
-        uint64_t chunkOffset = (index % chunkCount) * 64;
-        const uint8_t* chunk = d_oliv_dataset + chunkOffset;
+        uint64_t chunkIndex = index % chunkCount;
+        const uint64_t* chunk = dataset64 + (chunkIndex * 8);
         uint64_t chunkWords[8];
-        for (int j = 0; j < 8; ++j)
-            chunkWords[j] = le64(chunk + j * 8);
+        const ulonglong2* chunkVec = reinterpret_cast<const ulonglong2*>(chunk);
+        ulonglong2 c0 = ldg_u64x2(chunkVec + 0);
+        ulonglong2 c1 = ldg_u64x2(chunkVec + 1);
+        ulonglong2 c2 = ldg_u64x2(chunkVec + 2);
+        ulonglong2 c3 = ldg_u64x2(chunkVec + 3);
+        chunkWords[0] = c0.x;
+        chunkWords[1] = c0.y;
+        chunkWords[2] = c1.x;
+        chunkWords[3] = c1.y;
+        chunkWords[4] = c2.x;
+        chunkWords[5] = c2.y;
+        chunkWords[6] = c3.x;
+        chunkWords[7] = c3.y;
 
         uint64_t index2 = mixWords[(sourceLane + 3) & 7] ^ progWord ^ dynamicSalt ^
                           (rotl64((uint64_t)i, sourceLane) & 0xffffULL);
-        index2 ^= le64(d_oliv_header + 16);
+        index2 ^= header2;
         index2 ^= (i + (uint64_t)(sourceLane * 3 + 1)) * 0x94d049bb133111ebULL;
-        uint64_t chunkOffset2 = (index2 % chunkCount) * 64;
-        const uint8_t* chunk2 = d_oliv_dataset + chunkOffset2;
+        uint64_t chunkIndex2 = index2 % chunkCount;
+        const uint64_t* chunk2 = dataset64 + (chunkIndex2 * 8);
         uint64_t chunkWords2[8];
-        for (int j = 0; j < 8; ++j)
-            chunkWords2[j] = le64(chunk2 + j * 8);
+        const ulonglong2* chunk2v = reinterpret_cast<const ulonglong2*>(chunk2);
+        ulonglong2 c20 = ldg_u64x2(chunk2v + 0);
+        ulonglong2 c21 = ldg_u64x2(chunk2v + 1);
+        ulonglong2 c22 = ldg_u64x2(chunk2v + 2);
+        ulonglong2 c23 = ldg_u64x2(chunk2v + 3);
+        chunkWords2[0] = c20.x;
+        chunkWords2[1] = c20.y;
+        chunkWords2[2] = c21.x;
+        chunkWords2[3] = c21.y;
+        chunkWords2[4] = c22.x;
+        chunkWords2[5] = c22.y;
+        chunkWords2[6] = c23.x;
+        chunkWords2[7] = c23.y;
 
         uint64_t index3 = mixWords[(sourceLane + 5) & 7] ^ dynamicSalt ^ progWord ^
-                          le64(d_oliv_header + 24);
+                          header3;
         index3 ^= (i * 0x2545f4914f6cdd1dULL) + (uint64_t)(sourceLane << 3);
-        uint64_t chunkOffset3 = (index3 % chunkCount) * 64;
-        const uint8_t* chunk3 = d_oliv_dataset + chunkOffset3;
+        uint64_t chunkIndex3 = index3 % chunkCount;
+        const uint64_t* chunk3 = dataset64 + (chunkIndex3 * 8);
         uint64_t chunkWords3[8];
-        for (int j = 0; j < 8; ++j)
-            chunkWords3[j] = le64(chunk3 + j * 8);
+        const ulonglong2* chunk3v = reinterpret_cast<const ulonglong2*>(chunk3);
+        ulonglong2 c30 = ldg_u64x2(chunk3v + 0);
+        ulonglong2 c31 = ldg_u64x2(chunk3v + 1);
+        ulonglong2 c32 = ldg_u64x2(chunk3v + 2);
+        ulonglong2 c33 = ldg_u64x2(chunk3v + 3);
+        chunkWords3[0] = c30.x;
+        chunkWords3[1] = c30.y;
+        chunkWords3[2] = c31.x;
+        chunkWords3[3] = c31.y;
+        chunkWords3[4] = c32.x;
+        chunkWords3[5] = c32.y;
+        chunkWords3[6] = c33.x;
+        chunkWords3[7] = c33.y;
 
         for (int lane = 0; lane < 8; ++lane)
         {
@@ -468,8 +517,11 @@ __global__ __launch_bounds__(256, 2) void olivetumhash_search_kernel(
         dynamicSalt = rotl64(dynamicSalt, (unsigned)(rotateAmt & 31));
     }
 
+    alignas(8) uint8_t mixBytes[64];
+    uint64_t* mixBytes64 = reinterpret_cast<uint64_t*>(mixBytes);
+#pragma unroll
     for (int i = 0; i < 8; ++i)
-        le64put(mixBytes + i * 8, mixWords[i]);
+        mixBytes64[i] = mixWords[i];
 
     uint8_t mixDigest[32];
     keccak256(mixDigest, mixBytes, sizeof(mixBytes));
@@ -498,6 +550,18 @@ __global__ __launch_bounds__(256, 2) void olivetumhash_search_kernel(
         outBytes[i] = mixDigest[i];
 }
 
+__global__ __launch_bounds__(256, 2) void olivetumhash_search_kernel(
+    volatile Search_results* g_output, uint64_t start_nonce)
+{
+    olivetumhash_search_kernel_body(g_output, start_nonce);
+}
+
+__global__ __launch_bounds__(128, 3) void olivetumhash_search_kernel_128(
+    volatile Search_results* g_output, uint64_t start_nonce)
+{
+    olivetumhash_search_kernel_body(g_output, start_nonce);
+}
+
 void set_olivetum_dataset(uint8_t* dataset, uint64_t datasetSize)
 {
     CUDA_SAFE_CALL(cudaMemcpyToSymbol(d_oliv_dataset, &dataset, sizeof(uint8_t*)));
@@ -519,6 +583,9 @@ void set_olivetum_target(const uint8_t* targetBytes)
 void run_olivetumhash_search(uint32_t gridSize, uint32_t blockSize, cudaStream_t stream,
     volatile Search_results* g_output, uint64_t start_nonce)
 {
-    olivetumhash_search_kernel<<<gridSize, blockSize, 0, stream>>>(g_output, start_nonce);
+    if (blockSize <= 128)
+        olivetumhash_search_kernel_128<<<gridSize, blockSize, 0, stream>>>(g_output, start_nonce);
+    else
+        olivetumhash_search_kernel<<<gridSize, blockSize, 0, stream>>>(g_output, start_nonce);
     CUDA_SAFE_CALL(cudaGetLastError());
 }

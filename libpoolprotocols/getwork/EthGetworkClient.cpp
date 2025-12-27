@@ -22,17 +22,6 @@ EthGetworkClient::EthGetworkClient(int worktimeout, unsigned farmRecheckPeriod, 
     m_olivetum(olivetum)
 {
     m_jSwBuilder.settings_["indentation"] = "";
-
-    Json::Value jGetWork;
-    jGetWork["id"] = unsigned(1);
-    jGetWork["jsonrpc"] = "2.0";
-    m_methodGetWork = m_olivetum ? "olivetumhash_getWork" : "eth_getWork";
-    m_methodSubmitWork = m_olivetum ? "olivetumhash_submitWork" : "eth_submitWork";
-    m_methodSubmitHashrate = m_olivetum ? "olivetumhash_submitHashrate" : "eth_submitHashrate";
-
-    jGetWork["method"] = m_methodGetWork;
-    jGetWork["params"] = Json::Value(Json::arrayValue);
-    m_jsonGetWork = std::string(Json::writeString(m_jSwBuilder, jGetWork));
 }
 
 EthGetworkClient::~EthGetworkClient()
@@ -43,6 +32,49 @@ EthGetworkClient::~EthGetworkClient()
 
 void EthGetworkClient::connect()
 {
+    // Prepare RPC method names and initial getWork payload based on the connection.
+    m_soloGateway = boost::algorithm::istarts_with(m_conn->Scheme(), "solo+");
+    m_payoutAddress.clear();
+    auto path = m_conn->Path();
+    if (!path.empty() && path != "/")
+    {
+        if (path[0] == '/')
+            path = path.substr(1);
+        // Keep only the first path segment as payout (ignore trailing slashes).
+        auto slashPos = path.find('/');
+        if (slashPos != std::string::npos)
+            path = path.substr(0, slashPos);
+        m_payoutAddress = path;
+    }
+    if (m_soloGateway && m_payoutAddress.empty())
+    {
+        cwarn << "Solo gateway URI missing payout address in path; falling back to standard getWork";
+        m_soloGateway = false;
+    }
+    std::string payoutParam = m_payoutAddress;
+    if (!payoutParam.empty() && !boost::algorithm::istarts_with(payoutParam, "0x"))
+        payoutParam = "0x" + payoutParam;
+    if (!payoutParam.empty())
+        m_payoutAddress = payoutParam;
+
+    m_methodGetWork = m_olivetum ? (m_soloGateway ? "olivetumhash_getWorkFor" : "olivetumhash_getWork")
+                                 : (m_soloGateway ? "eth_getWorkFor" : "eth_getWork");
+    m_methodSubmitWork =
+        m_olivetum ? (m_soloGateway ? "olivetumhash_submitWorkFor" : "olivetumhash_submitWork")
+                   : (m_soloGateway ? "eth_submitWorkFor" : "eth_submitWork");
+    m_methodSubmitHashrate =
+        m_olivetum ? (m_soloGateway ? "olivetumhash_submitHashrateFor" : "olivetumhash_submitHashrate")
+                   : (m_soloGateway ? "eth_submitHashrateFor" : "eth_submitHashrate");
+
+    Json::Value jGetWork;
+    jGetWork["id"] = unsigned(1);
+    jGetWork["jsonrpc"] = "2.0";
+    jGetWork["method"] = m_methodGetWork;
+    jGetWork["params"] = Json::Value(Json::arrayValue);
+    if (m_soloGateway && !payoutParam.empty())
+        jGetWork["params"].append(payoutParam);
+    m_jsonGetWork = std::string(Json::writeString(m_jSwBuilder, jGetWork));
+
     // Prevent unnecessary and potentially dangerous recursion
     bool expected = false;
     if (!m_connecting.compare_exchange_strong(expected, true, memory_order::memory_order_relaxed))
@@ -554,8 +586,10 @@ void EthGetworkClient::submitHashrate(uint64_t const& rate, string const& id)
         jReq["method"] = m_methodSubmitHashrate;
         jReq["params"] = Json::Value(Json::arrayValue);
         // core-geth rejects Uint64 hex with leading zeros, so send compact form
+        if (m_soloGateway && !m_payoutAddress.empty())
+            jReq["params"].append(m_payoutAddress);
         jReq["params"].append(toCompactHex(rate, HexPrefix::Add));
-        jReq["params"].append(id);                           // Already prefixed by 0x
+        jReq["params"].append(id);  // Already prefixed by 0x
         send(jReq);
     }
 
@@ -575,6 +609,8 @@ void EthGetworkClient::submitSolution(const Solution& solution)
         m_solution_submitted_max_id = max(m_solution_submitted_max_id, id);
         jReq["method"] = m_methodSubmitWork;
         jReq["params"] = Json::Value(Json::arrayValue);
+        if (m_soloGateway && !m_payoutAddress.empty())
+            jReq["params"].append(m_payoutAddress);
         jReq["params"].append("0x" + nonceHex);
         jReq["params"].append("0x" + solution.work.header.hex());
         jReq["params"].append("0x" + solution.mixHash.hex());

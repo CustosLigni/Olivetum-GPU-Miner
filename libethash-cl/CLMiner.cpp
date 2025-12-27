@@ -8,6 +8,8 @@
 #include <libethcore/Farm.h>
 #include <ethash/ethash.hpp>
 
+#include <sstream>
+
 #include "CLMiner.h"
 #include "ethash.h"
 #include "olivetumhash.h"
@@ -258,6 +260,8 @@ CLMiner::CLMiner(unsigned _index, CLSettings _settings, DeviceDescriptor& _devic
 {
     m_deviceDescriptor = _device;
     m_settings.localWorkSize = ((m_settings.localWorkSize + 7) / 8) * 8;
+    if (m_settings.globalWorkSize > 0)
+        m_settings.globalWorkSizeMultiplier = m_settings.globalWorkSize;
     m_settings.globalWorkSize = m_settings.localWorkSize * m_settings.globalWorkSizeMultiplier;
 }
 
@@ -304,7 +308,6 @@ void CLMiner::workLoop()
     {
         while (!shouldStop())
         {
-
             // Read results.
             volatile SearchResults results;
 
@@ -832,7 +835,7 @@ bool CLMiner::initEpoch_internal()
     try
     {
 
-        char options[256] = {0};
+        std::ostringstream options;
         int computeCapability = 0;
 #ifndef __clang__
 
@@ -842,10 +845,12 @@ bool CLMiner::initEpoch_internal()
             computeCapability =
                 m_deviceDescriptor.clNvComputeMajor * 10 + m_deviceDescriptor.clNvComputeMinor;
             int maxregs = computeCapability >= 35 ? 72 : 63;
-            sprintf(options, "-cl-nv-maxrregcount=%d", maxregs);
+            options << "-cl-nv-maxrregcount=" << maxregs << ' ';
         }
 
 #endif
+        options << "-cl-std=CL2.0";
+        const auto optionsStr = options.str();
         // create context
         m_context.clear();
         m_context.push_back(cl::Context(vector<cl::Device>(&m_device, &m_device + 1)));
@@ -883,7 +888,7 @@ bool CLMiner::initEpoch_internal()
         cl::Program program(m_context[0], sources), binaryProgram;
         try
         {
-            program.build({m_device}, options);
+            program.build({m_device}, optionsStr.c_str());
         }
         catch (cl::BuildError const& buildErr)
         {
@@ -929,7 +934,7 @@ bool CLMiner::initEpoch_internal()
                     cl::Program program(m_context[0], {m_device}, blobs);
                     try
                     {
-                        program.build({m_device}, options);
+                        program.build({m_device}, optionsStr.c_str());
                         cllog << "Build info success:"
                               << program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(m_device);
                         binaryProgram = program;

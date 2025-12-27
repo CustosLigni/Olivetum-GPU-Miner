@@ -934,7 +934,7 @@ public:
                  << "    Use this extended CUDA arguments to fine tune the performance." << endl
                  << "    Be advised default values are best generic findings by developers" << endl
                  << endl
-                 << "    --cu-grid-size      INT [1 .. 131072] Default = 8192" << endl
+                 << "    --cu-grid-size      INT [1 .. 131072] Default = 4096" << endl
                  << "                        Set the grid size" << endl
                  << "    --cu-block-size     UINT {32,64,128,256} Default = 128" << endl
                  << "                        Set the block size" << endl

@@ -1,4 +1,6 @@
 #include <chrono>
+#include <cstdint>
+#include <limits>
 
 #include "PoolManager.h"
 
@@ -174,6 +176,8 @@ void PoolManager::setClientHandlers()
         bool newDiff = (wp.boundary != m_currentWp.boundary);
 
         m_currentWp = wp;
+        if (m_Settings.olivetum)
+            m_currentWp.algo = "olivetumhash";
 
         if (newEpoch)
         {
@@ -184,15 +188,24 @@ void PoolManager::setClientHandlers()
             {
                 if (m_currentWp.block >= 0)
                 {
-                    if (wp.algo == "olivetumhash")
+                    if (m_currentWp.algo == "olivetumhash")
                         m_currentWp.epoch = m_currentWp.block / 11520;
                     else
                         m_currentWp.epoch = m_currentWp.block / 30000;
                 }
                 else
                 {
-                    if (wp.algo == "olivetumhash")
-                        m_currentWp.epoch = 0;
+                    if (m_currentWp.algo == "olivetumhash")
+                    {
+                        // Olivetumhash seed encodes epoch number in the first 8 bytes (little-endian).
+                        const uint8_t* seed = m_currentWp.seed.data();
+                        uint64_t epoch = 0;
+                        for (int i = 0; i < 8; i++)
+                            epoch |= (uint64_t(seed[i]) << (8 * i));
+                        m_currentWp.epoch = (epoch > uint64_t(std::numeric_limits<int>::max()))
+                                                ? 0
+                                                : static_cast<int>(epoch);
+                    }
                     else
                         m_currentWp.epoch = ethash::find_epoch_number(
                             ethash::hash256_from_bytes(m_currentWp.seed.data()));

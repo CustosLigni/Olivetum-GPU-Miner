@@ -55,6 +55,7 @@ static std::map<std::string, SchemeAttributes> s_schemes = {
     {"stratum2+ssl", {ProtocolFamily::STRATUM, SecureLevel::TLS12, 2}},
     {"stratum3+ssl", {ProtocolFamily::STRATUM, SecureLevel::TLS12, 3}},
     {"http", {ProtocolFamily::GETWORK, SecureLevel::NONE, 0}},
+    {"solo+http", {ProtocolFamily::GETWORK, SecureLevel::NONE, 0}},
     {"getwork", {ProtocolFamily::GETWORK, SecureLevel::NONE, 0}},
 
     /*

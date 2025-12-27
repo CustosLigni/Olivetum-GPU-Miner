@@ -37,6 +37,12 @@ endif()
 if(NOT CUDA_VERSION VERSION_LESS 11.1)
 	# Tesla GA10x cards, RTX Ampere – RTX 3080/3090, RTX A6000, RTX A40
 	list(APPEND ETHMINER_CUDA_ARCHES 86)
+endif()
+if(NOT CUDA_VERSION VERSION_LESS 11.8)
+	# NVIDIA Ada Lovelace – RTX 40xx
+	list(APPEND ETHMINER_CUDA_ARCHES 89)
+endif()
+if(NOT CUDA_VERSION VERSION_LESS 11.1)
 	# Hopper/Blackwell & newer families (covers RTX 50xx / H100+)
 	list(APPEND ETHMINER_CUDA_ARCHES 90)
 endif()

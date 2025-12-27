@@ -599,6 +599,7 @@ void CUDAMiner::search(
             m_new_work.store(false, std::memory_order_relaxed);
             break;
         }
+
     }
 
 #ifdef DEV_BUILD

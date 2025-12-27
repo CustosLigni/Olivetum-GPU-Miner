@@ -29,7 +29,9 @@ inline ulong rotl64(ulong v, uint r)
     return (v << r) | (v >> (64 - r));
 }
 
-inline ulong le64(const __global uchar* p)
+// Use generic pointer qualifiers so kernels compile across drivers that are strict about
+// address spaces.
+inline ulong le64(const uchar* p)
 {
     return ((ulong)p[0]) | ((ulong)p[1] << 8) | ((ulong)p[2] << 16) | ((ulong)p[3] << 24) |
            ((ulong)p[4] << 32) | ((ulong)p[5] << 40) | ((ulong)p[6] << 48) | ((ulong)p[7] << 56);
@@ -59,7 +61,7 @@ inline void be64put(__private uchar* p, ulong v)
     p[7] = (uchar)(v);
 }
 
-inline int cmp256(const __private uchar* a, const __private uchar* b)
+inline int cmp256(const uchar* a, const uchar* b)
 {
     for (int i = 0; i < 32; ++i)
     {

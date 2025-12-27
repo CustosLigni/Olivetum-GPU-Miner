@@ -62,6 +62,8 @@ private:
     Json::Value m_pendingJReq;
     std::chrono::time_point<std::chrono::steady_clock> m_pending_tstamp;
     bool m_olivetum = false;
+    bool m_soloGateway = false;
+    std::string m_payoutAddress;
     std::string m_methodGetWork;
     std::string m_methodSubmitWork;
     std::string m_methodSubmitHashrate;
