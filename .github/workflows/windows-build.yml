@@ -1,0 +1,49 @@
+name: windows-build
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          toolset: 14.29
+
+      - name: Install tools
+        run: choco install strawberryperl -y
+
+      - name: Setup CMake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: "3.28.3"
+
+      - name: CMake version
+        run: cmake --version
+
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.17
+        with:
+          cuda: "12.5.0"
+
+      - name: Configure (CUDA + OpenCL)
+        shell: cmd
+        run: cmake -S . -B build-win -G "Visual Studio 17 2022" -A x64 -T v142 -DETHASHCUDA=ON -DETHASHCL=ON -DAPICORE=ON
+
+      - name: Build (ethminer)
+        run: cmake --build build-win --config Release --target ethminer
+
+      - name: Upload ethminer.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: olivetum-ethminer-win64
+          path: build-win/ethminer/Release/ethminer.exe
