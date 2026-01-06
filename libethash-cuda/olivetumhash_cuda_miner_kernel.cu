@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include <string.h>
 
-// Olivetumhash GPU path (naive, referencyjna implementacja)
+// Olivetumhash GPU path (naive, reference implementation)
 
 __device__ __constant__ uint8_t* d_oliv_dataset = nullptr;
 __device__ __constant__ uint64_t d_oliv_dataset_bytes = 0;
@@ -388,10 +388,6 @@ __device__ __forceinline__ void olivetumhash_search_kernel_body(
     for (int i = 0; i < 8; ++i)
         mixWords[i] = mixInitWords[i];
 
-    uint64_t chunkCount = d_oliv_chunk_count;
-    if (chunkCount == 0)
-        chunkCount = 1;
-
     alignas(8) uint8_t progBuf2[104];
     for (int i = 0; i < 64; ++i)
         progBuf2[i] = h512[i];
@@ -416,6 +412,9 @@ __device__ __forceinline__ void olivetumhash_search_kernel_body(
     uint64_t dynamicSalt = header1 ^ nonceLE;
     const uint64_t refreshInterval = 8;
     const uint64_t* dataset64 = reinterpret_cast<const uint64_t*>(d_oliv_dataset);
+    uint64_t chunkCount = d_oliv_chunk_count;
+    if (chunkCount == 0)
+        chunkCount = 1;
 
     for (uint64_t i = 0; i < 64; ++i)
     {
@@ -444,12 +443,37 @@ __device__ __forceinline__ void olivetumhash_search_kernel_body(
         index ^= (i + (uint64_t)sourceLane) * 0x517cc1b727220a95ULL;
         uint64_t chunkIndex = index % chunkCount;
         const uint64_t* chunk = dataset64 + (chunkIndex * 8);
-        uint64_t chunkWords[8];
         const ulonglong2* chunkVec = reinterpret_cast<const ulonglong2*>(chunk);
         ulonglong2 c0 = ldg_u64x2(chunkVec + 0);
         ulonglong2 c1 = ldg_u64x2(chunkVec + 1);
         ulonglong2 c2 = ldg_u64x2(chunkVec + 2);
         ulonglong2 c3 = ldg_u64x2(chunkVec + 3);
+
+        uint64_t index2 = mixWords[(sourceLane + 3) & 7] ^ progWord ^ dynamicSalt ^
+                          (rotl64((uint64_t)i, sourceLane) & 0xffffULL);
+        index2 ^= header2;
+        index2 ^= (i + (uint64_t)(sourceLane * 3 + 1)) * 0x94d049bb133111ebULL;
+        uint64_t chunkIndex2 = index2 % chunkCount;
+        const uint64_t* chunk2 = dataset64 + (chunkIndex2 * 8);
+        const ulonglong2* chunk2v = reinterpret_cast<const ulonglong2*>(chunk2);
+        ulonglong2 c20 = ldg_u64x2(chunk2v + 0);
+        ulonglong2 c21 = ldg_u64x2(chunk2v + 1);
+        ulonglong2 c22 = ldg_u64x2(chunk2v + 2);
+        ulonglong2 c23 = ldg_u64x2(chunk2v + 3);
+
+        uint64_t index3 = mixWords[(sourceLane + 5) & 7] ^ dynamicSalt ^ progWord ^
+                          header3;
+        index3 ^= (i * 0x2545f4914f6cdd1dULL) + (uint64_t)(sourceLane << 3);
+        uint64_t chunkIndex3 = index3 % chunkCount;
+        const uint64_t* chunk3 = dataset64 + (chunkIndex3 * 8);
+        const ulonglong2* chunk3v = reinterpret_cast<const ulonglong2*>(chunk3);
+        ulonglong2 c30 = ldg_u64x2(chunk3v + 0);
+        ulonglong2 c31 = ldg_u64x2(chunk3v + 1);
+        ulonglong2 c32 = ldg_u64x2(chunk3v + 2);
+        ulonglong2 c33 = ldg_u64x2(chunk3v + 3);
+
+        // Delay packing until all reads are in flight so independent ALU work can overlap latency.
+        uint64_t chunkWords[8];
         chunkWords[0] = c0.x;
         chunkWords[1] = c0.y;
         chunkWords[2] = c1.x;
@@ -459,18 +483,7 @@ __device__ __forceinline__ void olivetumhash_search_kernel_body(
         chunkWords[6] = c3.x;
         chunkWords[7] = c3.y;
 
-        uint64_t index2 = mixWords[(sourceLane + 3) & 7] ^ progWord ^ dynamicSalt ^
-                          (rotl64((uint64_t)i, sourceLane) & 0xffffULL);
-        index2 ^= header2;
-        index2 ^= (i + (uint64_t)(sourceLane * 3 + 1)) * 0x94d049bb133111ebULL;
-        uint64_t chunkIndex2 = index2 % chunkCount;
-        const uint64_t* chunk2 = dataset64 + (chunkIndex2 * 8);
         uint64_t chunkWords2[8];
-        const ulonglong2* chunk2v = reinterpret_cast<const ulonglong2*>(chunk2);
-        ulonglong2 c20 = ldg_u64x2(chunk2v + 0);
-        ulonglong2 c21 = ldg_u64x2(chunk2v + 1);
-        ulonglong2 c22 = ldg_u64x2(chunk2v + 2);
-        ulonglong2 c23 = ldg_u64x2(chunk2v + 3);
         chunkWords2[0] = c20.x;
         chunkWords2[1] = c20.y;
         chunkWords2[2] = c21.x;
@@ -480,17 +493,7 @@ __device__ __forceinline__ void olivetumhash_search_kernel_body(
         chunkWords2[6] = c23.x;
         chunkWords2[7] = c23.y;
 
-        uint64_t index3 = mixWords[(sourceLane + 5) & 7] ^ dynamicSalt ^ progWord ^
-                          header3;
-        index3 ^= (i * 0x2545f4914f6cdd1dULL) + (uint64_t)(sourceLane << 3);
-        uint64_t chunkIndex3 = index3 % chunkCount;
-        const uint64_t* chunk3 = dataset64 + (chunkIndex3 * 8);
         uint64_t chunkWords3[8];
-        const ulonglong2* chunk3v = reinterpret_cast<const ulonglong2*>(chunk3);
-        ulonglong2 c30 = ldg_u64x2(chunk3v + 0);
-        ulonglong2 c31 = ldg_u64x2(chunk3v + 1);
-        ulonglong2 c32 = ldg_u64x2(chunk3v + 2);
-        ulonglong2 c33 = ldg_u64x2(chunk3v + 3);
         chunkWords3[0] = c30.x;
         chunkWords3[1] = c30.y;
         chunkWords3[2] = c31.x;
@@ -500,6 +503,7 @@ __device__ __forceinline__ void olivetumhash_search_kernel_body(
         chunkWords3[6] = c33.x;
         chunkWords3[7] = c33.y;
 
+#pragma unroll
         for (int lane = 0; lane < 8; ++lane)
         {
             uint64_t data1 = chunkWords[(lane + sourceLane) & 7];

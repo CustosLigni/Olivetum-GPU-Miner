@@ -376,17 +376,9 @@ __kernel void search(__global volatile SearchResults* g_output, __global const u
     for (int i = 0; i < 8; ++i)
         mixWords[i] = le64(mixBytes + i * 8);
 
-    __private uchar progBuf1[40];
-    for (int i = 0; i < 32; ++i)
-        progBuf1[i] = header[i];
-    for (int i = 0; i < 8; ++i)
-        progBuf1[32 + i] = nonceBytes[i];
-    __private uchar progBytes1[64];
-    keccak512(progBytes1, progBuf1, 40);
-
     __private uchar progBuf2[104];
     for (int i = 0; i < 64; ++i)
-        progBuf2[i] = progBytes1[i];
+        progBuf2[i] = h512[i];
     for (int i = 0; i < 32; ++i)
         progBuf2[64 + i] = header[i];
     for (int i = 0; i < 8; ++i)
@@ -396,9 +388,13 @@ __kernel void search(__global volatile SearchResults* g_output, __global const u
 
     __private ulong program[16];
     for (int i = 0; i < 8; ++i)
-        program[i] = le64(progBytes1 + i * 8);
+        program[i] = le64(h512 + i * 8);
     for (int i = 0; i < 8; ++i)
         program[8 + i] = le64(progBytes2 + i * 8);
+    // Refresh hash is constant for this nonce: keccak512(h512||header||nonce) == progBytes2.
+    __private ulong refreshWords[8];
+    for (int i = 0; i < 8; ++i)
+        refreshWords[i] = le64(progBytes2 + i * 8);
 
     ulong dynamicSalt = le64(header + 8) ^ nonceLE;
     const ulong refreshInterval = 8;
@@ -407,22 +403,11 @@ __kernel void search(__global volatile SearchResults* g_output, __global const u
     {
         if (refreshInterval != 0 && i != 0 && (i % refreshInterval) == 0)
         {
-            __private uchar buf[104];
-            for (int j = 0; j < 64; ++j)
-                buf[j] = mixBytes[j];
-            for (int j = 0; j < 32; ++j)
-                buf[64 + j] = header[j];
-            for (int j = 0; j < 8; ++j)
-                buf[96 + j] = nonceBytes[j];
-            __private uchar sum[64];
-            keccak512(sum, buf, 104);
             for (int j = 0; j < 16; ++j)
             {
-                uint off = (j * 8) % 64;
-                ulong word = le64(sum + off);
-                program[j] ^= word;
+                program[j] ^= refreshWords[j & 7];
             }
-            dynamicSalt ^= le64(sum);
+            dynamicSalt ^= refreshWords[0];
         }
 
         ulong progWord = program[i & 15] ^ (i * 0x9e3779b97f4a7c15UL);

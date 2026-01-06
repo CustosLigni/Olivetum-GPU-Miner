@@ -43,6 +43,18 @@ struct SearchResults
     uint32_t abort;
 };
 
+void be64put(uint8_t* p, uint64_t v)
+{
+    p[0] = static_cast<uint8_t>(v >> 56);
+    p[1] = static_cast<uint8_t>(v >> 48);
+    p[2] = static_cast<uint8_t>(v >> 40);
+    p[3] = static_cast<uint8_t>(v >> 32);
+    p[4] = static_cast<uint8_t>(v >> 24);
+    p[5] = static_cast<uint8_t>(v >> 16);
+    p[6] = static_cast<uint8_t>(v >> 8);
+    p[7] = static_cast<uint8_t>(v);
+}
+
 std::string h256hex(const h256& h)
 {
     return h.hex();
@@ -82,7 +94,7 @@ int main()
         cl::Context ctx(device);
         cl::CommandQueue q(ctx, device);
 
-        // Wczytaj kernel z pliku.
+        // Load kernel from file.
         std::ifstream f(kKernelPath);
         if (!f.good())
         {
@@ -148,6 +160,9 @@ int main()
             return 3;
         }
 
+        const uint64_t gpuNonce = nonce + out.rslt[0].gid;
+        auto cpuResForGpuNonce = OlivetumhashAux::eval(epoch, header, gpuNonce);
+
         // mixDigest is raw 32 bytes (uint32_t mix[8]).
         uint8_t mixBytes[32];
         std::memcpy(mixBytes, out.rslt[0].mix, 32);
@@ -155,14 +170,18 @@ int main()
         uint8_t finalBuf[32 + 32 + 8];
         std::memcpy(finalBuf, mixBytes, 32);
         std::memcpy(finalBuf + 32, header.data(), 32);
-        std::memcpy(finalBuf + 64, &nonce, 8);
+        uint8_t nonceBe[8];
+        be64put(nonceBe, gpuNonce);
+        std::memcpy(finalBuf + 64, nonceBe, 8);
         auto finalFromGpu = ethash::keccak256(finalBuf, sizeof(finalBuf));
 
         h256 gpuMix(mixBytes, h256::ConstructFromPointer);
         h256 gpuFinal(finalFromGpu.bytes, h256::ConstructFromPointer);
 
-        bool ok = (gpuMix == cpuRes.mixHash) && (gpuFinal == cpuRes.value);
-        std::cout << "[OpenCL] mix=" << h256hex(gpuMix) << " final=" << h256hex(gpuFinal) << " -> "
+        bool ok = (gpuMix == cpuResForGpuNonce.mixHash) && (gpuFinal == cpuResForGpuNonce.value);
+        std::cout << "[OpenCL] gid=" << out.rslt[0].gid << " nonce=0x" << std::hex << gpuNonce
+                  << std::dec << " mix=" << h256hex(gpuMix) << " final=" << h256hex(gpuFinal)
+                  << " -> "
                   << (ok ? "OK" : "MISMATCH") << std::endl;
 
         return ok ? 0 : 4;
